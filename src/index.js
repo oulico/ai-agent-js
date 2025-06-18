@@ -12,13 +12,6 @@ const supabase = createClient(
     process.env.SUPABASE_ANON_KEY
 );
 
-const mockUsers = [
-    {id: 1, name: "김철수", department: "개발팀", position: "시니어 개발자"},
-    {id: 2, name: "이영희", department: "디자인팀", position: "UX 디자이너"},
-    {id: 3, name: "박민수", department: "마케팅팀", position: "마케팅 매니저"}
-];
-
-
 const tools = [
     {
         type: "function", // 항상 "function"
@@ -39,83 +32,43 @@ const tools = [
     }
 ];
 
-
 async function get_user_info(name) {
+    console.log(`DB에서 ${name}의 정보를 조회합니다...`);
 
-    try {
-        console.log(`DB에서 ${name}의 정보를 조회합니다...`);
+    const {data, error} = await supabase
+        .from('users')
+        .select('*')
+        .eq('name', name)
+        .single();
 
-        const {data, error} = await supabase
-            .from('users')
-            .select('*')     // ← 모든 컬럼 조회
-            .eq('name', name)
-            .single();
-        console.log(`Supabase 조회 결과: ${JSON.stringify(data)}`); // supabase data { id: 1, name: '김철수', department: '개발팀', position: '시니어 개발자' }
+    console.log(`Supabase 조회 결과: ${JSON.stringify(data)}`);
 
-        // supabase data { name: '김철수' }
-        if (error) {
-            console.log(`Supabase 조회 실패 : ${error.message}`);
-            console.log(`mockUsers에서 조회 시도...`);
-
-            const user = mockUsers.find(user => user.name === name);
-
-            if (user) {
-                return {
-                    success: true,
-                    data: user,
-                    source: "mock"
-                };
-            } else {
-                return {
-                    success: false,
-                    message: `사용자 ${name}을(를) 찾을 수 없습니다.`
-                };
-            }
-        }
-
-        if (data) {
-            return {
-                success: true,
-                data: data,
-                source: "supabase"
-            };
-        } else {
-            console.log(`Supabase에 ${name}의 정보가 없습니다.`);
-
-            const user = mockUsers.find(user => user.name === name);
-
-            if (user) {
-                return {
-                    success: true,
-                    data: user,
-                    source: "mock"
-                };
-            } else {
-                return {
-                    success: false,
-                    message: `사용자 ${name}을(를) 찾을 수 없습니다.`
-                };
-            }
-        }
-
-    } catch (error) {
-        console.error(`조회 중 오류: ${error.message}`);
-
-        const user = mockUsers.find(user => user.name === name);
-
-        if (user) {
-            return {
-                success: true,
-                data: user,
-                source: "mock (오류 발생)"
-            };
-        } else {
-            return {
-                success: false,
-                message: `사용자 ${name}을(를) 찾을 수 없습니다.`
-            };
-        }
+    // 에러가 있으면 에러 반환
+    if (error) {
+        console.log(`Supabase 조회 실패: ${error.message}`);
+        return {
+            success: false,
+            error: error.message,
+            message: `사용자 ${name} 조회 중 오류가 발생했습니다.`
+        };
     }
+
+    // 데이터가 없으면 Not Found 반환
+    if (!data) {
+        console.log(`Supabase에 ${name}의 정보가 없습니다.`);
+        return {
+            success: false,
+            message: `사용자 ${name}을(를) 찾을 수 없습니다.`
+        };
+    }
+
+    // 성공적으로 데이터를 찾은 경우
+    console.log(`✅ ${name} 정보를 성공적으로 조회했습니다.`);
+    return {
+        success: true,
+        data: data,
+        source: "supabase"
+    };
 }
 
 async function chat(userMessage) {
@@ -136,7 +89,7 @@ async function chat(userMessage) {
 
         const toolCall = message.tool_calls[0];
         const functionName = toolCall.function.name;
-        const functionArgs = JSON.parse(toolCall.function.arguments)
+        const functionArgs = JSON.parse(toolCall.function.arguments);
 
         console.log(`	함수: ${functionName}`);
         console.log(`   인수: ${JSON.stringify(functionArgs)}`);
@@ -144,45 +97,52 @@ async function chat(userMessage) {
         //3단계 함수 실행
         let result;
         if (functionName === "get_user_info") {
-            result = await get_user_info(functionArgs.name)
+            try {
+                result = await get_user_info(functionArgs.name);
+            } catch (error) {
+                console.error(`함수 실행 중 오류: ${error.message}`);
+                result = {
+                    success: false,
+                    error: error.message,
+                    message: "시스템 오류가 발생했습니다."
+                };
+            }
+        } else {
+            result = {
+                success: false,
+                error: "Unknown function",
+                message: `알 수 없는 함수: ${functionName}`
+            };
         }
 
         console.log(`	결과: ${JSON.stringify(result)}`);
 
-        //4단계: 결과를 ChatGPT에게 전달하고 최종 답변 받기
+        // ChatGPT에게 결과 전달하고 최종 답변 받기
         const finalResponse = await openai.chat.completions.create({
             model: "gpt-4o",
-            messages: [// 이부분이 세부분으로 나뉘어져 있는 것도 국룰이다. 안그러면 chat gpt가 혼란스러워 함.
+            messages: [
                 {role: "user", content: userMessage},
                 {role: "assistant", content: null, tool_calls: message.tool_calls},
-                {role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(result)},
-
-            ],
-
+                {role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(result)}
+            ]
         });
-        console.log(`ChatGPT: ${finalResponse.choices[0].message.content}`); // 여기서 choices[0]이 있는 것은 chatGPT가 여러개의 답변을 준비하기 때문임. 대부분의 경우 하나만 사용하는 것이 토큰 절약에 좋음. 게다가 function calling 에서는 정확한 함수 실행이 제일 중요하므로 여러 답변 보다는 하나의 정확한 실행이 더 중요함.
-    } else {
-        //도구 사용없이 일반 답변
-        console.log(`ChatGPT: ${message.content}`);
+
+        console.log(`ChatGPT: ${finalResponse.choices[0].message.content}`);
     }
 
-}
+    async function test() {
+        console.log(`Supabase 연동 Function Calling Test\n`);
 
-async function test() {
-    console.log(`간단한 Function Calling Test \n`);
+        await chat("김철수 정보 알려줘");
+        console.log('\n' + '='.repeat(40) + '\n');
 
-    await chat("김철수 정보 알려줘");
-    console.log('\n' + '='.repeat(40) + '\n');
+        await chat("이영희는 어느 팀이야?");
+        console.log('\n' + '='.repeat(40) + '\n');
 
-    await chat("이영희는 어느 팀이야?");
-    console.log('\n' + '='.repeat(40) + '\n');
+        await chat("홍길동 정보 알려줘");
+        console.log('\n' + '='.repeat(40) + '\n');
 
-    await chat("홍길동 정보 알려줘");
-    console.log('\n' + '='.repeat(40) + '\n');
+        await chat("안녕하세요!");
+    }
 
-    await chat("안녕하세요!");
-
-}
-
-test().catch(console.error);
-
+    test().catch(console.error);
